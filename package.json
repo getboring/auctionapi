@@ -1,0 +1,5 @@
+{
+  "name": "bidspx",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
