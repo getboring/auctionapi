@@ -1,0 +1,13 @@
+{
+  "version": "5",
+  "dialect": "pg",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1773030352401,
+      "tag": "0000_cooing_albert_cleary",
+      "breakpoints": true
+    }
+  ]
+}

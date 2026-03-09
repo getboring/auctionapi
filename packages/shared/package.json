@@ -1,0 +1,19 @@
+{
+  "name": "@bidspx/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./enums": "./src/enums/index.ts",
+    "./schemas": "./src/schemas/index.ts",
+    "./realtime": "./src/realtime/index.ts"
+  },
+  "dependencies": {
+    "@bidspx/db": "workspace:*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
