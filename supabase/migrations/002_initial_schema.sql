@@ -204,6 +204,7 @@ CREATE TABLE "bids" (
 	"status" "bid_status" DEFAULT 'active' NOT NULL,
 	"ip_address_hash" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "bids_idempotency_key_unique" UNIQUE("idempotency_key")
 );
 --> statement-breakpoint
@@ -393,6 +394,8 @@ CREATE INDEX "bids_auction_amount_desc_idx" ON "bids" USING btree ("auction_id",
 CREATE INDEX "bids_bidder_created_at_idx" ON "bids" USING btree ("bidder_id","created_at");--> statement-breakpoint
 CREATE INDEX "bid_increments_auction_price_floor_idx" ON "bid_increments" USING btree ("auction_id","price_floor");--> statement-breakpoint
 CREATE INDEX "lots_auction_sort_order_idx" ON "lots" USING btree ("auction_id","sort_order");--> statement-breakpoint
+CREATE INDEX "settlements_auction_idx" ON "settlements" USING btree ("auction_id");--> statement-breakpoint
+CREATE INDEX "settlements_status_idx" ON "settlements" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "invoices_auction_idx" ON "invoices" USING btree ("auction_id");--> statement-breakpoint
 CREATE INDEX "invoices_bidder_idx" ON "invoices" USING btree ("bidder_id");--> statement-breakpoint
 CREATE INDEX "invoices_status_idx" ON "invoices" USING btree ("status");--> statement-breakpoint

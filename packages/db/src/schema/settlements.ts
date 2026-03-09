@@ -1,8 +1,8 @@
-import { pgTable, uuid, numeric, text, timestamp, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, numeric, text, timestamp, pgEnum, index } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { auction_events } from './auction-events';
 import { bids } from './bids';
-import { SettlementStatus } from '@bidspx/shared';
+
 
 export const settlementStatusEnum = pgEnum('settlement_status', ['pending', 'invoiced', 'earnest_received', 'paid_in_full', 'closed', 'disputed']);
 
@@ -17,7 +17,7 @@ export const SettlementSchema = z.object({
   balance_due: z.string(), // Decimal
   seller_payout_amount: z.string(), // Decimal
   commission_amount: z.string(), // Decimal
-  status: z.nativeEnum(SettlementStatus).default('pending'),
+  status: z.enum(['pending', 'invoiced', 'earnest_received', 'paid_in_full', 'closed', 'disputed']).default('pending'),
   closing_date: z.date().nullable(), // Date logically
   title_company: z.string().nullable(),
   escrow_number: z.string().nullable(),
@@ -45,4 +45,7 @@ export const settlements = pgTable('settlements', {
   stripe_transfer_id: text('stripe_transfer_id'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  auctionIdx: index('settlements_auction_idx').on(table.auction_id),
+  statusIdx: index('settlements_status_idx').on(table.status),
+}));

@@ -16,6 +16,7 @@ export const BidSchema = z.object({
   status: z.nativeEnum(BidStatus).default('active'),
   ip_address_hash: z.string().nullable(),
   created_at: z.date(),
+  updated_at: z.date(),
 });
 export type Bid = z.infer<typeof BidSchema>;
 
@@ -29,6 +30,7 @@ export const bids = pgTable('bids', {
   status: bidStatusEnum('status').default('active').notNull(),
   ip_address_hash: text('ip_address_hash'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   auctionAmountDescIdx: index('bids_auction_amount_desc_idx').on(table.auction_id, table.amount.desc()),
   bidderCreatedAtIdx: index('bids_bidder_created_at_idx').on(table.bidder_id, table.created_at),

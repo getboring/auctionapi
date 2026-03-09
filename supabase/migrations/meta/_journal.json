@@ -1,12 +1,12 @@
 {
-  "version": "5",
-  "dialect": "pg",
+  "version": "7",
+  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
       "version": "7",
-      "when": 1773030352401,
-      "tag": "0000_cooing_albert_cleary",
+      "when": 1773068417407,
+      "tag": "0000_warm_purifiers",
       "breakpoints": true
     }
   ]

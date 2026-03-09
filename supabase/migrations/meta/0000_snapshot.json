@@ -1,5 +1,5 @@
 {
-  "id": "535bf2a7-1eb3-4e49-841c-2116d24ba771",
+  "id": "b94d00e3-9410-435f-911f-ee1046fb782e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1442,6 +1442,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
@@ -1888,7 +1895,38 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "settlements_auction_idx": {
+          "name": "settlements_auction_idx",
+          "columns": [
+            {
+              "expression": "auction_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "settlements_status_idx": {
+          "name": "settlements_status_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "settlements_auction_id_auction_events_id_fk": {
           "name": "settlements_auction_id_auction_events_id_fk",

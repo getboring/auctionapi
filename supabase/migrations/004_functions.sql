@@ -11,11 +11,13 @@ DECLARE
   v_auction record;
   v_existing_bid record;
   v_is_approved boolean;
-  v_current_high_bid numeric;
+  v_current_winning_bid record;
+  v_current_high_amount numeric;
   v_increment numeric;
   v_new_bid_id uuid;
   v_auction_extended boolean := false;
   v_new_ends_at timestamptz;
+  v_effective_amount numeric;
 BEGIN
   -- 1. Check idempotency
   SELECT id, amount INTO v_existing_bid FROM bids WHERE idempotency_key = p_idempotency_key;
@@ -38,33 +40,110 @@ BEGIN
   END IF;
 
   -- 5. Validate bidder is not seller
-  -- Assuming seller_id on properties table, need to get it
-  IF EXISTS (SELECT 1 FROM properties WHERE id = v_auction.property_id AND seller_id IN (SELECT id FROM sellers WHERE profile_id IN (SELECT profile_id FROM bidders WHERE id = p_bidder_id))) THEN
+  IF EXISTS (SELECT 1 FROM properties WHERE listing_key = v_auction.property_id AND seller_id IN (SELECT id FROM sellers WHERE profile_id IN (SELECT profile_id FROM bidders WHERE id = p_bidder_id))) THEN
     RETURN jsonb_build_object('success', false, 'error', 'Seller cannot bid on their own property.');
   END IF;
 
-  -- 6. Get current high bid amount
-  SELECT amount INTO v_current_high_bid FROM bids WHERE auction_id = p_auction_id AND status = 'winning' ORDER BY amount DESC LIMIT 1;
-  IF v_current_high_bid IS NULL THEN
-    v_current_high_bid := v_auction.starting_bid;
+  -- 6. Get current winning bid
+  SELECT * INTO v_current_winning_bid FROM bids WHERE auction_id = p_auction_id AND status = 'winning' ORDER BY amount DESC LIMIT 1;
+  IF v_current_winning_bid.id IS NULL THEN
+    v_current_high_amount := v_auction.starting_bid;
+  ELSE
+    v_current_high_amount := v_current_winning_bid.amount;
   END IF;
 
   -- 7. Get applicable bid increment
   SELECT increment_amount INTO v_increment
   FROM bid_increments
-  WHERE (auction_id = p_auction_id OR auction_id IS NULL) AND price_floor <= v_current_high_bid
+  WHERE (auction_id = p_auction_id OR auction_id IS NULL) AND price_floor <= v_current_high_amount
   ORDER BY auction_id NULLS LAST, price_floor DESC LIMIT 1;
-
-  IF v_increment IS NULL THEN v_increment := 0; END IF; -- Fallback
+  IF v_increment IS NULL THEN v_increment := 0; END IF;
 
   -- 8. Validate amount
-  IF p_amount < (v_current_high_bid + v_increment) THEN
-    RETURN jsonb_build_object('success', false, 'error', 'Bid amount must be at least ' || (v_current_high_bid + v_increment));
+  IF v_current_winning_bid.id IS NOT NULL AND p_amount < (v_current_high_amount + v_increment) THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Bid amount must be at least ' || (v_current_high_amount + v_increment));
   END IF;
 
-  -- 9. Insert bid record
+  -- If first bid, just need to be >= starting_bid
+  IF v_current_winning_bid.id IS NULL AND p_amount < v_auction.starting_bid THEN
+     RETURN jsonb_build_object('success', false, 'error', 'Bid amount must be at least the starting bid of ' || v_auction.starting_bid);
+  END IF;
+
+  v_effective_amount := p_amount;
+
+  -- 9. Proxy Bidding Logic
+  IF v_current_winning_bid.id IS NOT NULL AND v_current_winning_bid.max_amount IS NOT NULL THEN
+    -- The previous winning bid had a proxy max amount set
+    IF p_max_amount IS NOT NULL THEN
+      -- Both have proxies. Who wins?
+      IF p_max_amount > v_current_winning_bid.max_amount THEN
+        -- New bidder outbids the old proxy. New effective amount is old max + 1 increment (or up to p_max)
+        v_effective_amount := v_current_winning_bid.max_amount + v_increment;
+        IF v_effective_amount > p_max_amount THEN
+          v_effective_amount := p_max_amount;
+        END IF;
+
+        -- Insert old proxy's losing counter-bid up to their max
+        INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+        VALUES (p_auction_id, v_current_winning_bid.bidder_id, v_current_winning_bid.max_amount, v_current_winning_bid.max_amount, p_idempotency_key || '_counter1', 'outbid', NULL);
+
+      ELSE
+        -- Old proxy wins or ties. Old proxy places a counter-bid.
+        v_effective_amount := p_max_amount;
+
+        -- Insert new bidder's losing bid up to their max
+        INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+        VALUES (p_auction_id, p_bidder_id, p_max_amount, p_max_amount, p_idempotency_key, 'outbid', p_ip_hash);
+
+        -- The effective winning bid belongs to the old proxy bidder
+        v_effective_amount := p_max_amount + v_increment;
+        IF v_effective_amount > v_current_winning_bid.max_amount THEN
+            v_effective_amount := v_current_winning_bid.max_amount;
+        END IF;
+
+        INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+        VALUES (p_auction_id, v_current_winning_bid.bidder_id, v_effective_amount, v_current_winning_bid.max_amount, p_idempotency_key || '_counter2', 'winning', NULL)
+        RETURNING id INTO v_new_bid_id;
+
+        -- Mark existing 'winning' as 'outbid'
+        UPDATE bids SET status = 'outbid' WHERE auction_id = p_auction_id AND id != v_new_bid_id AND status = 'winning';
+
+        RETURN jsonb_build_object('success', true, 'bid_id', v_new_bid_id, 'new_high_bid', v_effective_amount, 'auction_extended', false, 'new_ends_at', v_auction.ends_at);
+      END IF;
+    ELSE
+      -- New bidder doesn't have a proxy, old bidder does.
+      IF p_amount > v_current_winning_bid.max_amount THEN
+        -- New bidder simply outbids the old proxy max.
+        -- We insert the old proxy's losing max bid.
+        INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+        VALUES (p_auction_id, v_current_winning_bid.bidder_id, v_current_winning_bid.max_amount, v_current_winning_bid.max_amount, p_idempotency_key || '_counter1', 'outbid', NULL);
+        v_effective_amount := p_amount;
+      ELSE
+         -- Old proxy outbids the new straight bid.
+         -- Insert new bidder's straight bid as losing
+         INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+         VALUES (p_auction_id, p_bidder_id, p_amount, NULL, p_idempotency_key, 'outbid', p_ip_hash);
+
+         v_effective_amount := p_amount + v_increment;
+         IF v_effective_amount > v_current_winning_bid.max_amount THEN
+            v_effective_amount := v_current_winning_bid.max_amount;
+         END IF;
+
+         INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
+         VALUES (p_auction_id, v_current_winning_bid.bidder_id, v_effective_amount, v_current_winning_bid.max_amount, p_idempotency_key || '_counter2', 'winning', NULL)
+         RETURNING id INTO v_new_bid_id;
+
+         -- Mark existing 'winning' as 'outbid'
+         UPDATE bids SET status = 'outbid' WHERE auction_id = p_auction_id AND id != v_new_bid_id AND status = 'winning';
+
+         RETURN jsonb_build_object('success', true, 'bid_id', v_new_bid_id, 'new_high_bid', v_effective_amount, 'auction_extended', false, 'new_ends_at', v_auction.ends_at);
+      END IF;
+    END IF;
+  END IF;
+
+  -- Insert the new winning bid (standard case or where new proxy wins)
   INSERT INTO bids (auction_id, bidder_id, amount, max_amount, idempotency_key, status, ip_address_hash)
-  VALUES (p_auction_id, p_bidder_id, p_amount, p_max_amount, p_idempotency_key, 'winning', p_ip_hash)
+  VALUES (p_auction_id, p_bidder_id, v_effective_amount, p_max_amount, p_idempotency_key, 'winning', p_ip_hash)
   RETURNING id INTO v_new_bid_id;
 
   -- 10. Mark previous winning bid as outbid
@@ -84,10 +163,10 @@ BEGIN
   -- 12. Use pg_net to call Edge Function for notification dispatch (Need app.supabase_url setup per environment)
   PERFORM net.http_post(
     current_setting('app.supabase_url') || '/notify-bid',
-    jsonb_build_object('auction_id', p_auction_id, 'bid_id', v_new_bid_id, 'amount', p_amount)
+    jsonb_build_object('auction_id', p_auction_id, 'bid_id', v_new_bid_id, 'amount', v_effective_amount)
   );
 
-  RETURN jsonb_build_object('success', true, 'bid_id', v_new_bid_id, 'new_high_bid', p_amount, 'auction_extended', v_auction_extended, 'new_ends_at', v_new_ends_at);
+  RETURN jsonb_build_object('success', true, 'bid_id', v_new_bid_id, 'new_high_bid', v_effective_amount, 'auction_extended', v_auction_extended, 'new_ends_at', v_new_ends_at);
 END;
 $$;
 
@@ -111,7 +190,7 @@ BEGIN
   IF NOT FOUND THEN RETURN; END IF;
 
   SELECT * INTO v_auction FROM auction_events WHERE id = p_auction_id;
-  SELECT s.* INTO v_seller FROM properties p JOIN sellers s ON p.seller_id = s.id WHERE p.id = v_auction.property_id;
+  SELECT s.* INTO v_seller FROM properties p JOIN sellers s ON p.seller_id = s.id WHERE p.listing_key = v_auction.property_id;
 
   -- 2. Calculate buyer premium
   IF v_winning_bid.amount >= 750000 THEN
@@ -148,7 +227,7 @@ BEGIN
   (v_invoice_id, 'Hammer Price', v_winning_bid.amount, 'hammer_price', 1),
   (v_invoice_id, 'Buyer Premium', v_buyer_premium, 'buyer_premium', 2);
 
-  -- 6. Insert notifications (could also use pg_net here, but keeping simple with table)
+  -- 6. Insert notifications
   INSERT INTO notifications (profile_id, type, title, body, entity_type, entity_id)
   SELECT profile_id, 'auction_won', 'You won the auction!', 'Invoice ' || v_invoice_number || ' is ready.', 'auction', p_auction_id
   FROM bidders WHERE id = v_winning_bid.bidder_id;
@@ -170,11 +249,9 @@ BEGIN
   -- 2. Verify status
   IF v_auction.status != 'live' OR v_auction.ends_at > now() THEN RETURN; END IF;
 
-  -- 3. Soft close check (should normally be handled by place_bid, but catch edge cases here)
   -- 4. Set status ended
   UPDATE auction_events SET status = 'ended' WHERE id = p_auction_id;
 
-  -- Mark high bid winning (place_bid does this, but ensure consistency)
   -- 5. Call settlement
   PERFORM calculate_settlement(p_auction_id);
 
